@@ -35,6 +35,7 @@ import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -119,8 +120,8 @@ fun LibraryMixScreen(
     val keyboardController = LocalSoftwareKeyboardController.current
     val queueSearchedSongsStr = stringResource(R.string.queue_searched_songs)
     val playerConnection = LocalPlayerConnection.current ?: return
-    val isPlaying by playerConnection.isEffectivelyPlaying.collectAsState()
-    val mediaMetadata by playerConnection.mediaMetadata.collectAsState()
+    val isPlaying by playerConnection.isEffectivelyPlaying.collectAsStateWithLifecycle()
+    val mediaMetadata by playerConnection.mediaMetadata.collectAsStateWithLifecycle()
 
     var viewType by rememberEnumPreference(AlbumViewTypeKey, LibraryViewType.GRID)
     val (sortType, onSortTypeChange) =
@@ -134,8 +135,8 @@ fun LibraryMixScreen(
     val (ytmSync) = rememberPreference(YtmSyncKey, true)
 
     var isSearchActive by rememberSaveable { mutableStateOf(false) }
-    val searchQuery by viewModel.searchQuery.collectAsState()
-    val debouncedSearchQuery by viewModel.debouncedSearchQuery.collectAsState()
+    val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
+    val debouncedSearchQuery by viewModel.debouncedSearchQuery.collectAsStateWithLifecycle()
     val normalizedQuery = remember(isSearchActive, searchQuery, debouncedSearchQuery) {
         if (isSearchActive) {
             searchQuery.normalizeForSearch()
@@ -144,7 +145,7 @@ fun LibraryMixScreen(
         }
     }
 
-    val topSize by viewModel.topValue.collectAsState(initial = 50)
+    val topSize by viewModel.topValue.collectAsStateWithLifecycle(initialValue = 50)
     val likedPlaylist =
         Playlist(
             playlist =
@@ -215,10 +216,10 @@ fun LibraryMixScreen(
     val showCachedPlaylists = showCached && matchesNormalizedQuery(normalizedQuery, cachedPlaylist.playlist.name)
 
 
-    val albums = viewModel.albums.collectAsState()
-    val artist = viewModel.artists.collectAsState()
-    val songs = viewModel.songs.collectAsState()
-    val playlist = viewModel.playlists.collectAsState()
+    val albums = viewModel.albums.collectAsStateWithLifecycle()
+    val artist = viewModel.artists.collectAsStateWithLifecycle()
+    val songs = viewModel.songs.collectAsStateWithLifecycle()
+    val playlist = viewModel.playlists.collectAsStateWithLifecycle()
 
     var allItems = albums.value + artist.value + playlist.value
     val locale = LocalLocale.current.platformLocale
@@ -341,7 +342,7 @@ fun LibraryMixScreen(
     val lazyGridState = rememberLazyGridState()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val scrollToTop =
-        backStackEntry?.savedStateHandle?.getStateFlow("scrollToTop", false)?.collectAsState()
+        backStackEntry?.savedStateHandle?.getStateFlow("scrollToTop", false)?.collectAsStateWithLifecycle()
 
     LaunchedEffect(scrollToTop?.value) {
         if (scrollToTop?.value == true) {
@@ -424,7 +425,7 @@ fun LibraryMixScreen(
         }
     }
 
-    val isRefreshing by viewModel.isRefreshing.collectAsState()
+    val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
     val pullRefreshState = rememberPullToRefreshState()
 
     Box(
