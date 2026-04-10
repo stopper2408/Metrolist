@@ -151,7 +151,11 @@ fun ExploreScreen(
                                     .fillMaxWidth()
                                     .height(ListItemHeight * 4),
                         ) {
-                            items(4) {
+                            items(
+                                count = 4,
+                                key = { "explore_skeleton_$it" },
+                                contentType = { "Skeleton" }
+                            ) {
                                 Row(
                                     modifier =
                                         Modifier
@@ -281,6 +285,7 @@ fun ExploreScreen(
                             items(
                                 items = section.items.filterIsInstance<SongItem>().distinctBy { it.id },
                                 key = { "explore_song_${it.id}" },
+                                contentType = { "SongItem" }
                             ) { song ->
                                 YouTubeListItem(
                                     item = song,
@@ -354,6 +359,7 @@ fun ExploreScreen(
                         items(
                             items = newReleaseAlbums.distinctBy { it.id },
                             key = { "explore_album_${it.id}" },
+                            contentType = { "AlbumItem" }
                         ) { album ->
                             YouTubeGridItem(
                                 item = album,
@@ -395,6 +401,7 @@ fun ExploreScreen(
                         items(
                             items = topVideosSection.items.filterIsInstance<SongItem>().distinctBy { it.id },
                             key = { "explore_video_${it.id}" },
+                            contentType = { "VideoItem" }
                         ) { video ->
                             YouTubeGridItem(
                                 item = video,
@@ -444,7 +451,11 @@ fun ExploreScreen(
                         contentPadding = PaddingValues(6.dp),
                         modifier = Modifier.height((MoodAndGenresButtonHeight + 12.dp) * 4 + 12.dp),
                     ) {
-                        items(moodAndGenres) {
+                        items(
+                            items = moodAndGenres,
+                            key = { it.title },
+                            contentType = { "MoodAndGenre" }
+                        ) {
                             MoodAndGenresButton(
                                 title = it.title,
                                 onClick = {

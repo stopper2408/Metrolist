@@ -189,7 +189,11 @@ fun YouTubeAlbumMenu(
                 )
             }
 
-            items(notAddedList) { song ->
+            items(
+                items = notAddedList,
+                key = { it.id },
+                contentType = { "Song" }
+            ) { song ->
                 SongListItem(song = song)
             }
         }
@@ -206,6 +210,7 @@ fun YouTubeAlbumMenu(
             items(
                 items = album?.artists.orEmpty().distinctBy { it.id },
                 key = { "menu_yt_album_artist_${it.id}" },
+                contentType = { "Artist" }
             ) { artist ->
                 Row(
                     verticalAlignment = Alignment.CenterVertically,

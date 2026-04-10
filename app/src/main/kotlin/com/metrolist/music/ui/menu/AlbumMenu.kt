@@ -214,7 +214,11 @@ fun AlbumMenu(
                 )
             }
 
-            items(notAddedList) { song ->
+            items(
+                items = notAddedList,
+                key = { it.id },
+                contentType = { "Song" }
+            ) { song ->
                 SongListItem(song = song)
             }
         }
@@ -227,6 +231,7 @@ fun AlbumMenu(
             items(
                 items = album.artists.distinctBy { it.id },
                 key = { "menu_album_artist_${it.id}" },
+                contentType = { "Artist" }
             ) { artist ->
                 Row(
                     verticalAlignment = Alignment.CenterVertically,

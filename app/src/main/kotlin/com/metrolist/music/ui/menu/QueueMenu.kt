@@ -140,7 +140,11 @@ fun QueueMenu(
         ListDialog(
             onDismiss = { showSelectArtistDialog = false },
         ) {
-            items(artists) { artist ->
+            items(
+                items = artists,
+                key = { it.id ?: "artist_fallback_${it.name.hashCode()}" },
+                contentType = { "Artist" }
+            ) { artist ->
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier

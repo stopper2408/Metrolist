@@ -282,7 +282,11 @@ fun AddToPlaylistDialog(
                 }
             }
 
-            items(playlists) { playlist ->
+            items(
+                items = playlists,
+                key = { it.id },
+                contentType = { "Playlist" }
+            ) { playlist ->
                 val containsSong = playlist.id in playlistsContainingSong
                 val rowBg by animateColorAsState(
                     targetValue = if (containsSong)

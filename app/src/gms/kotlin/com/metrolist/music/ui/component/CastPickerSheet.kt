@@ -138,7 +138,11 @@ fun CastPickerSheet(
         } else {
             // Show available devices
             LazyColumn {
-                items(routes) { route ->
+                items(
+                    items = routes,
+                    key = { it.id },
+                    contentType = { "CastRoute" }
+                ) { route ->
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
