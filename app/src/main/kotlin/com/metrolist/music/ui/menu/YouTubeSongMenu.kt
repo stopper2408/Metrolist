@@ -143,12 +143,16 @@ fun YouTubeSongMenu(
     }  
 
     if (showSelectArtistDialog) {  
-        ListDialog(  
-            onDismiss = { showSelectArtistDialog = false },  
-        ) {  
-            items(artists) { artist ->  
-                Row(  
-                    verticalAlignment = Alignment.CenterVertically,  
+        ListDialog(
+            onDismiss = { showSelectArtistDialog = false },
+        ) {
+            items(
+                items = artists,
+                key = { it.id ?: "artist_fallback_${it.name.hashCode()}" },
+                contentType = { "Artist" }
+            ) { artist ->
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
                     modifier =  
                     Modifier  
                         .height(ListItemHeight)  

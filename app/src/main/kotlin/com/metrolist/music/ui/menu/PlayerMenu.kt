@@ -187,7 +187,11 @@ fun PlayerMenu(
         ListDialog(
             onDismiss = { showSelectArtistDialog = false },
         ) {
-            items(artists) { artist ->
+            items(
+                items = artists,
+                key = { it.id ?: "artist_fallback_${it.name.hashCode()}" },
+                contentType = { "Artist" }
+            ) { artist ->
                 Box(
                     contentAlignment = Alignment.CenterStart,
                     modifier =
@@ -1589,7 +1593,11 @@ fun ListenTogetherDialog(
                         Spacer(modifier = Modifier.height(8.dp))
                     }
 
-                    items(pendingJoinRequests) { request ->
+                    items(
+                        items = pendingJoinRequests,
+                        key = { it.userId },
+                        contentType = { "JoinRequest" }
+                    ) { request ->
                         Surface(
                             modifier =
                                 Modifier
@@ -1676,7 +1684,11 @@ fun ListenTogetherDialog(
                         Spacer(modifier = Modifier.height(8.dp))
                     }
 
-                    items(pendingSuggestions) { suggestion ->
+                    items(
+                        items = pendingSuggestions,
+                        key = { it.suggestionId },
+                        contentType = { "Suggestion" }
+                    ) { suggestion ->
                         Surface(
                             modifier =
                                 Modifier
