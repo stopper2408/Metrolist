@@ -10,7 +10,6 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -23,10 +22,13 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.metrolist.music.R
@@ -68,19 +70,17 @@ fun PlayingIndicator(
         modifier = modifier,
     ) {
         animatables.forEach { animatable ->
-            Canvas(
+            Box(
                 modifier =
                 Modifier
                     .fillMaxHeight()
-                    .width(barWidth),
-            ) {
-                drawRoundRect(
-                    color = color,
-                    topLeft = Offset(x = 0f, y = size.height * (1 - animatable.value)),
-                    size = size.copy(height = animatable.value * size.height),
-                    cornerRadius = CornerRadius(cornerRadius.toPx()),
-                )
-            }
+                    .width(barWidth)
+                    .graphicsLayer {
+                        scaleY = animatable.value
+                        transformOrigin = TransformOrigin(0.5f, 1f)
+                    }
+                    .background(color, RoundedCornerShape(cornerRadius)),
+            )
         }
     }
 }

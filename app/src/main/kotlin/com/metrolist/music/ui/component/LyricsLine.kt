@@ -174,21 +174,22 @@ internal fun LyricsLine(
     }) {
         @Composable
         fun LyricContent() {
-            Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = agentAlignment) {
-                val inactiveAlpha = if (item.isBackground) 0.08f else 0.2f
-                val activeAlpha = 1f
-                val focusedAlpha = if (item.isBackground) 0.5f else 0.3f
-                val targetAlpha = if (item.isBackground || isActiveLine) {
-                    activeAlpha
-                } else if (isAutoScrollEnabled && displayedCurrentLineIndex >= 0) {
-                    when (abs(index - displayedCurrentLineIndex)) {
-                        0 -> focusedAlpha
-                        1 -> 0.2f; 2 -> 0.2f; 3 -> 0.15f; 4 -> 0.1f; else -> 0.08f
-                    }
-                } else inactiveAlpha
-                
-                val animatedAlpha by animateFloatAsState(targetAlpha, tween(250), label = "lyricsLineAlpha")
-                val lineColor = expressiveAccent.copy(alpha = if (item.isBackground) focusedAlpha else animatedAlpha)
+            val inactiveAlpha = if (item.isBackground) 0.08f else 0.2f
+            val activeAlpha = 1f
+            val focusedAlpha = if (item.isBackground) 0.5f else 0.3f
+            val targetAlpha = if (item.isBackground || isActiveLine) {
+                activeAlpha
+            } else if (isAutoScrollEnabled && displayedCurrentLineIndex >= 0) {
+                when (abs(index - displayedCurrentLineIndex)) {
+                    0 -> focusedAlpha
+                    1 -> 0.2f; 2 -> 0.2f; 3 -> 0.15f; 4 -> 0.1f; else -> 0.08f
+                }
+            } else inactiveAlpha
+            
+            val animatedAlpha by animateFloatAsState(targetAlpha, tween(250), label = "lyricsLineAlpha")
+            val lineColor = expressiveAccent.copy(alpha = 1f)
+
+            Column(modifier = Modifier.fillMaxWidth().graphicsLayer { alpha = if (item.isBackground) focusedAlpha else animatedAlpha }, horizontalAlignment = agentAlignment) {
                 
                 val romanizedTextState by item.romanizedTextFlow.collectAsState()
                 val isRomanizedAvailable = romanizedTextState != null

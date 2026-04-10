@@ -26,7 +26,6 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.material3.BasicAlertDialog
@@ -56,10 +55,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
@@ -75,7 +74,6 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import android.text.Layout
 import androidx.compose.ui.unit.Constraints
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -609,7 +607,7 @@ fun ExperimentalLyrics(
 
         if (lyrics == LYRICS_NOT_FOUND) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(text = stringResource(R.string.lyrics_not_found), fontSize = 20.sp, color = MaterialTheme.colorScheme.secondary, modifier = Modifier.alpha(0.5f))
+                Text(text = stringResource(R.string.lyrics_not_found), fontSize = 20.sp, color = MaterialTheme.colorScheme.secondary, modifier = Modifier.graphicsLayer { alpha = 0.5f })
             }
         } else if (lyrics == null && (translationStatus is LyricsTranslationHelper.TranslationStatus.Idle || translationStatus is LyricsTranslationHelper.TranslationStatus.Error)) {
              Column(modifier = Modifier.padding(top = 100.dp)) {
@@ -680,7 +678,7 @@ fun ExperimentalLyrics(
                     Text(
                         text = stringResource(R.string.lyrics_from_provider, lyricsEntity.provider),
                         fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                        modifier = Modifier.fillMaxWidth().offset { IntOffset(0, (animatedProviderBase + userManualOffset).roundToInt()) }.padding(horizontal = 24.dp, vertical = 4.dp)
+                        modifier = Modifier.fillMaxWidth().graphicsLayer { translationY = animatedProviderBase + userManualOffset }.padding(horizontal = 24.dp, vertical = 4.dp)
                     )
                 }
 
@@ -705,7 +703,7 @@ fun ExperimentalLyrics(
                             modifier = Modifier.fillMaxWidth().layout { m, c -> 
                                 val p = m.measure(c.copy(maxHeight = Constraints.Infinity))
                                 layout(p.width, 0) { p.place(0, 0) }
-                            }.offset { IntOffset(0, (animatedOffset + userManualOffset).roundToInt()) }
+                            }.graphicsLayer { translationY = animatedOffset + userManualOffset }
                         ) {
                             when (listItem) {
                                 is LyricsListItem.Indicator -> {
