@@ -35,6 +35,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyHorizontalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -160,6 +161,7 @@ import com.metrolist.music.utils.rememberPreference
 import com.metrolist.music.viewmodels.CommunityPlaylistItem
 import com.metrolist.music.viewmodels.HomeViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -663,6 +665,12 @@ fun HomeScreen(
     val isRandomizing by viewModel.isRandomizing.collectAsStateWithLifecycle()
     val pullRefreshState = rememberPullToRefreshState()
 
+    // Precompute commonly reused transformed lists to reduce repeated allocations during recomposition.
+    val homeChips = remember(homePage?.chips) { homePage?.chips?.map { it to it.title }.orEmpty() }
+    val quickPicksUnique = remember(quickPicks) { quickPicks?.distinctBy { it.id }.orEmpty() }
+    val forgottenFavoritesUnique = remember(forgottenFavorites) { forgottenFavorites?.distinctBy { it.id }.orEmpty() }
+    val accountPlaylistsUnique = remember(accountPlaylists) { accountPlaylists?.distinctBy { it.id }.orEmpty() }
+
     val quickPicksLazyGridState = rememberLazyGridState()
     val forgottenFavoritesLazyGridState = rememberLazyGridState()
 
@@ -763,14 +771,16 @@ fun HomeScreen(
         }
     }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(lazylistState) {
         snapshotFlow {
             lazylistState.layoutInfo.visibleItemsInfo
                 .lastOrNull()
                 ?.index
-        }.collect { lastVisibleIndex ->
+        }
+            .distinctUntilChanged()
+            .collect { lastVisibleIndex ->
             val len = lazylistState.layoutInfo.totalItemsCount
-            if (lastVisibleIndex != null && lastVisibleIndex >= len - 3) {
+            if (homePage?.continuation != null && lastVisibleIndex != null && lastVisibleIndex >= len - 3) {
                 viewModel.loadMoreYouTubeItems(homePage?.continuation)
             }
         }
@@ -1156,7 +1166,7 @@ fun HomeScreen(
             ) {
                 item {
                     ChipsRow(
-                        chips = homePage?.chips?.map { it to it.title } ?: emptyList(),
+                        chips = homeChips,
                         currentValue = selectedChip,
                         onValueUpdate = {
                             viewModel.toggleChip(it)
@@ -1175,7 +1185,11 @@ fun HomeScreen(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                             ) {
-                                items(5) {
+                                items(
+                                    count = 5,
+                                    key = { "home_chip_shimmer_$it" },
+                                    contentType = { "ChipShimmer" },
+                                ) {
                                     TextPlaceholder(
                                         height = 30.dp,
                                         shape = RoundedCornerShape(16.dp),
@@ -1207,7 +1221,11 @@ fun HomeScreen(
                                         .only(WindowInsetsSides.Horizontal)
                                         .asPaddingValues(),
                             ) {
-                                items(savedPodcastShows) { podcast ->
+                                items(
+                                    items = savedPodcastShows,
+                                    key = { "home_saved_podcast_${it.id}" },
+                                    contentType = { "Podcast" },
+                                ) { podcast ->
                                     ytGridItem(podcast)
                                 }
                             }
@@ -1232,7 +1250,11 @@ fun HomeScreen(
                                         .only(WindowInsetsSides.Horizontal)
                                         .asPaddingValues(),
                             ) {
-                                items(episodesForLater) { episode ->
+                                items(
+                                    items = episodesForLater,
+                                    key = { "home_episode_${it.id}" },
+                                    contentType = { "Episode" },
+                                ) { episode ->
                                     ytGridItem(episode)
                                 }
                             }
@@ -1255,7 +1277,11 @@ fun HomeScreen(
                                         .only(WindowInsetsSides.Horizontal)
                                         .asPaddingValues(),
                             ) {
-                                items(featuredPodcasts) { podcast ->
+                                items(
+                                    items = featuredPodcasts,
+                                    key = { "home_featured_podcast_${it.id}" },
+                                    contentType = { "Podcast" },
+                                ) { podcast ->
                                     ytGridItem(podcast)
                                 }
                             }
@@ -1338,7 +1364,11 @@ fun HomeScreen(
                                             .only(WindowInsetsSides.Horizontal)
                                             .asPaddingValues(),
                                 ) {
-                                    items(sectionData.items) { item ->
+                                    items(
+                                        items = sectionData.items,
+                                        key = { "home_chip_section_${section.index}_${it.id}" },
+                                        contentType = { it::class.simpleName ?: "HomeChipItem" },
+                                    ) { item ->
                                         ytGridItem(item)
                                     }
                                 }
@@ -1728,7 +1758,7 @@ fun HomeScreen(
                         }
 
                         HomeSection.QuickPicks -> {
-                            quickPicks?.takeIf { it.isNotEmpty() }?.let { quickPicks ->
+                            quickPicksUnique.takeIf { it.isNotEmpty() }?.let { quickPicks ->
                                 item(key = "quick_picks_title") {
                                     val quickPicksTitle = stringResource(R.string.quick_picks)
                                     NavigationTitle(
@@ -1740,7 +1770,7 @@ fun HomeScreen(
                                                     playerConnection.playQueue(
                                                         ListQueue(
                                                             title = quickPicksTitle,
-                                                            items = quickPicks.distinctBy { it.id }.map { it.toMediaItem() },
+                                                            items = quickPicks.map { it.toMediaItem() },
                                                         ),
                                                     )
                                                 }
@@ -1766,8 +1796,9 @@ fun HomeScreen(
                                                 .animateItem(),
                                     ) {
                                         items(
-                                            items = quickPicks.distinctBy { it.id },
+                                            items = quickPicks,
                                             key = { "home_quickpick_${it.id}" },
+                                            contentType = { "Song" },
                                         ) { originalSong ->
                                             // fetch song from database to keep updated
                                             val song by database
@@ -1843,12 +1874,17 @@ fun HomeScreen(
                                 }
 
                                 item(key = "community_playlists_content") {
+                                    val communityUnique = remember(playlists) { playlists.distinctBy { it.playlist.id } }
                                     LazyRow(
                                         contentPadding = PaddingValues(horizontal = 16.dp),
                                         horizontalArrangement = Arrangement.spacedBy(16.dp),
                                         modifier = Modifier.animateItem(),
                                     ) {
-                                        items(playlists) { item ->
+                                        items(
+                                            items = communityUnique,
+                                            key = { "home_community_playlist_${it.playlist.id}" },
+                                            contentType = { "CommunityPlaylist" },
+                                        ) { item ->
                                             CommunityPlaylistCard(
                                                 item = item,
                                                 onClick = {
@@ -1973,7 +2009,11 @@ fun HomeScreen(
                                                     ) * rows,
                                                 ).animateItem(),
                                     ) {
-                                        items(keepListening) {
+                                        items(
+                                            items = keepListening,
+                                            key = { "home_keep_listening_${it.id}" },
+                                            contentType = { it::class.simpleName ?: "KeepListeningItem" },
+                                        ) {
                                             localGridItem(it)
                                         }
                                     }
@@ -1982,7 +2022,7 @@ fun HomeScreen(
                         }
 
                         HomeSection.AccountPlaylists -> {
-                            accountPlaylists?.takeIf { it.isNotEmpty() }?.let { accountPlaylists ->
+                            accountPlaylistsUnique.takeIf { it.isNotEmpty() }?.let { accountPlaylists ->
                                 item(key = "account_playlists_title") {
                                     NavigationTitle(
                                         label = stringResource(R.string.your_youtube_playlists),
@@ -2031,8 +2071,9 @@ fun HomeScreen(
                                         modifier = Modifier.animateItem(),
                                     ) {
                                         items(
-                                            items = accountPlaylists.distinctBy { it.id },
+                                            items = accountPlaylists,
                                             key = { "home_account_playlist_${it.id}" },
+                                            contentType = { "Playlist" },
                                         ) { item ->
                                             ytGridItem(item)
                                         }
@@ -2042,7 +2083,7 @@ fun HomeScreen(
                         }
 
                         HomeSection.ForgottenFavorites -> {
-                            forgottenFavorites?.takeIf { it.isNotEmpty() }?.let { forgottenFavorites ->
+                            forgottenFavoritesUnique.takeIf { it.isNotEmpty() }?.let { forgottenFavorites ->
                                 item(key = "forgotten_favorites_title") {
                                     val forgottenFavoritesTitle = stringResource(R.string.forgotten_favorites)
                                     NavigationTitle(
@@ -2054,7 +2095,7 @@ fun HomeScreen(
                                                     playerConnection.playQueue(
                                                         ListQueue(
                                                             title = forgottenFavoritesTitle,
-                                                            items = forgottenFavorites.distinctBy { it.id }.map { it.toMediaItem() },
+                                                            items = forgottenFavorites.map { it.toMediaItem() },
                                                         ),
                                                     )
                                                 }
@@ -2085,8 +2126,9 @@ fun HomeScreen(
                                                 .animateItem(),
                                     ) {
                                         items(
-                                            items = forgottenFavorites.distinctBy { it.id },
+                                            items = forgottenFavorites,
                                             key = { "home_forgotten_${it.id}" },
+                                            contentType = { "Song" },
                                         ) { originalSong ->
                                             val song by database
                                                 .song(originalSong.id)
@@ -2209,7 +2251,11 @@ fun HomeScreen(
                                                 .asPaddingValues(),
                                         modifier = Modifier.animateItem(),
                                     ) {
-                                        items(recommendation.items) { item ->
+                                        items(
+                                            items = recommendation.items,
+                                            key = { "home_similar_${section.index}_${it.id}" },
+                                            contentType = { it::class.simpleName ?: "RecommendationItem" },
+                                        ) { item ->
                                             ytGridItem(item)
                                         }
                                     }
@@ -2320,6 +2366,7 @@ fun HomeScreen(
                                             items(
                                                 items = sectionSongs.distinctBy { it.id },
                                                 key = { "home_section_${section.index}_song_${it.id}" },
+                                                contentType = { "Song" },
                                             ) { song ->
                                                 YouTubeListItem(
                                                     item = song,
@@ -2426,6 +2473,7 @@ fun HomeScreen(
                                             items(
                                                 items = sectionData.items.distinctBy { it.id },
                                                 key = { "home_section_${section.index}_item_${it.id}" },
+                                                contentType = { it::class.simpleName ?: "HomeSectionItem" },
                                             ) { item ->
                                                 ytGridItem(item)
                                             }
@@ -2459,12 +2507,16 @@ fun HomeScreen(
                                                 .height((MoodAndGenresButtonHeight + 12.dp) * 4 + 12.dp)
                                                 .animateItem(),
                                     ) {
-                                        items(moodAndGenres) {
+                                        itemsIndexed(
+                                            items = moodAndGenres,
+                                            key = { index, item -> "home_mood_${item.endpoint.browseId}:${item.endpoint.params.orEmpty()}:$index" },
+                                            contentType = { _, _ -> "MoodAndGenre" },
+                                        ) { _, item ->
                                             MoodAndGenresButton(
-                                                title = it.title,
+                                                title = item.title,
                                                 onClick = {
                                                     navController.navigate(
-                                                        "youtube_browse/${it.endpoint.browseId}?params=${it.endpoint.params}",
+                                                        "youtube_browse/${item.endpoint.browseId}?params=${item.endpoint.params}",
                                                     )
                                                 },
                                                 modifier =
@@ -2500,7 +2552,11 @@ fun HomeScreen(
                                             .only(WindowInsetsSides.Horizontal)
                                             .asPaddingValues(),
                                 ) {
-                                    items(4) {
+                                    items(
+                                        count = 4,
+                                        key = { "home_loading_shimmer_$it" },
+                                        contentType = { "SectionShimmer" },
+                                    ) {
                                         GridItemPlaceHolder()
                                     }
                                 }
