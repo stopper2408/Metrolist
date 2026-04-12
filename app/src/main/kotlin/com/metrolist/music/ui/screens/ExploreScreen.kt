@@ -32,6 +32,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyHorizontalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -451,15 +452,15 @@ fun ExploreScreen(
                         contentPadding = PaddingValues(6.dp),
                         modifier = Modifier.height((MoodAndGenresButtonHeight + 12.dp) * 4 + 12.dp),
                     ) {
-                        items(
+                        itemsIndexed(
                             items = moodAndGenres,
-                            key = { it.title },
-                            contentType = { "MoodAndGenre" }
-                        ) {
+                            key = { index, item -> "${item.endpoint.browseId}:${item.endpoint.params.orEmpty()}:$index" },
+                            contentType = { _, _ -> "MoodAndGenre" }
+                        ) { _, item ->
                             MoodAndGenresButton(
-                                title = it.title,
+                                title = item.title,
                                 onClick = {
-                                    navController.navigate("youtube_browse/${it.endpoint.browseId}?params=${it.endpoint.params}")
+                                    navController.navigate("youtube_browse/${item.endpoint.browseId}?params=${item.endpoint.params}")
                                 },
                                 modifier =
                                     Modifier

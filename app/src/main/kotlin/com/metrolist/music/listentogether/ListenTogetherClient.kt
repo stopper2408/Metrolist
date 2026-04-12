@@ -1087,7 +1087,9 @@ class ListenTogetherClient
                             return
                         }
 
-                        _pendingJoinRequests.value += payload
+                        _pendingJoinRequests.value =
+                            _pendingJoinRequests.value
+                                .filter { it.userId != payload.userId } + payload
                         log(LogLevel.INFO, "Join request received", "User: ${payload.username}")
 
                         // Check if auto-approval is enabled
@@ -1310,7 +1312,9 @@ class ListenTogetherClient
                                 approveSuggestion(payload.suggestionId)
                             } else {
                                 // Add to pending list and show notification
-                                _pendingSuggestions.value += payload
+                                _pendingSuggestions.value =
+                                    _pendingSuggestions.value
+                                        .filter { it.suggestionId != payload.suggestionId } + payload
                                 // Notify the host with actionable notification
                                 if (ActivityCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
                                     PackageManager.PERMISSION_GRANTED
