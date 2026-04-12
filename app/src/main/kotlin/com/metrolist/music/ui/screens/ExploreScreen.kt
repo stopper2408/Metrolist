@@ -32,7 +32,6 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyHorizontalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -79,6 +78,22 @@ import com.metrolist.music.ui.menu.YouTubeSongMenu
 import com.metrolist.music.ui.utils.SnapLayoutInfoProvider
 import com.metrolist.music.viewmodels.ChartsViewModel
 import com.metrolist.music.viewmodels.ExploreViewModel
+
+private data class ExploreLazyKeyedItem<T>(
+    val key: String,
+    val item: T,
+)
+
+private fun <T> List<T>.toExploreLazyKeyedItems(identity: (T) -> String): List<ExploreLazyKeyedItem<T>> {
+    val seen = mutableMapOf<String, Int>()
+    return map { value ->
+        val baseKey = identity(value)
+        val occurrence = seen.getOrDefault(baseKey, 0)
+        seen[baseKey] = occurrence + 1
+        val resolvedKey = if (occurrence == 0) baseKey else "$baseKey#$occurrence"
+        ExploreLazyKeyedItem(key = resolvedKey, item = value)
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -441,6 +456,12 @@ fun ExploreScreen(
                 }
 
                 explorePage?.moodAndGenres?.let { moodAndGenres ->
+                    val moodAndGenresKeyed =
+                        remember(moodAndGenres) {
+                            moodAndGenres.toExploreLazyKeyedItems {
+                                "explore_mood_${it.endpoint.browseId}:${it.endpoint.params.orEmpty()}"
+                            }
+                        }
                     NavigationTitle(
                         title = stringResource(R.string.mood_and_genres),
                         onClick = {
@@ -452,11 +473,12 @@ fun ExploreScreen(
                         contentPadding = PaddingValues(6.dp),
                         modifier = Modifier.height((MoodAndGenresButtonHeight + 12.dp) * 4 + 12.dp),
                     ) {
-                        itemsIndexed(
-                            items = moodAndGenres,
-                            key = { index, item -> "${item.endpoint.browseId}:${item.endpoint.params.orEmpty()}:$index" },
-                            contentType = { _, _ -> "MoodAndGenre" }
-                        ) { _, item ->
+                        items(
+                            items = moodAndGenresKeyed,
+                            key = { it.key },
+                            contentType = { "MoodAndGenre" }
+                        ) { keyedMood ->
+                            val item = keyedMood.item
                             MoodAndGenresButton(
                                 title = item.title,
                                 onClick = {

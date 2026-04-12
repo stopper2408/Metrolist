@@ -35,7 +35,6 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyHorizontalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -195,6 +194,22 @@ sealed class HomeSection(
     ) : HomeSection("home_page_section_$index", 10)
 
     data object MoodAndGenres : HomeSection("mood_and_genres", 5)
+}
+
+private data class LazyKeyedItem<T>(
+    val key: String,
+    val item: T,
+)
+
+private fun <T> List<T>.toLazyKeyedItems(identity: (T) -> String): List<LazyKeyedItem<T>> {
+    val seen = mutableMapOf<String, Int>()
+    return map { value ->
+        val baseKey = identity(value)
+        val occurrence = seen.getOrDefault(baseKey, 0)
+        seen[baseKey] = occurrence + 1
+        val resolvedKey = if (occurrence == 0) baseKey else "$baseKey#$occurrence"
+        LazyKeyedItem(key = resolvedKey, item = value)
+    }
 }
 
 @Composable
@@ -670,6 +685,11 @@ fun HomeScreen(
     val quickPicksUnique = remember(quickPicks) { quickPicks?.distinctBy { it.id }.orEmpty() }
     val forgottenFavoritesUnique = remember(forgottenFavorites) { forgottenFavorites?.distinctBy { it.id }.orEmpty() }
     val accountPlaylistsUnique = remember(accountPlaylists) { accountPlaylists?.distinctBy { it.id }.orEmpty() }
+    val savedPodcastShowsKeyed = remember(savedPodcastShows) { savedPodcastShows.toLazyKeyedItems { "home_saved_podcast_${it.id}" } }
+    val episodesForLaterKeyed = remember(episodesForLater) { episodesForLater.toLazyKeyedItems { "home_episode_${it.id}" } }
+    val keepListeningKeyed = remember(keepListening) {
+        keepListening?.toLazyKeyedItems { "home_keep_listening_${it::class.qualifiedName}:${it.id}" }.orEmpty()
+    }
 
     val quickPicksLazyGridState = rememberLazyGridState()
     val forgottenFavoritesLazyGridState = rememberLazyGridState()
@@ -728,6 +748,9 @@ fun HomeScreen(
                 cachedPodcasts
             }
         }
+    val featuredPodcastsKeyed = remember(featuredPodcasts) {
+        featuredPodcasts.toLazyKeyedItems { "home_featured_podcast_${it.id}" }
+    }
 
     val scope = rememberCoroutineScope()
     // Track randomization job
@@ -1222,11 +1245,11 @@ fun HomeScreen(
                                         .asPaddingValues(),
                             ) {
                                 items(
-                                    items = savedPodcastShows,
-                                    key = { "home_saved_podcast_${it.id}" },
+                                    items = savedPodcastShowsKeyed,
+                                    key = { it.key },
                                     contentType = { "Podcast" },
-                                ) { podcast ->
-                                    ytGridItem(podcast)
+                                ) { keyedPodcast ->
+                                    ytGridItem(keyedPodcast.item)
                                 }
                             }
                         }
@@ -1251,11 +1274,11 @@ fun HomeScreen(
                                         .asPaddingValues(),
                             ) {
                                 items(
-                                    items = episodesForLater,
-                                    key = { "home_episode_${it.id}" },
+                                    items = episodesForLaterKeyed,
+                                    key = { it.key },
                                     contentType = { "Episode" },
-                                ) { episode ->
-                                    ytGridItem(episode)
+                                ) { keyedEpisode ->
+                                    ytGridItem(keyedEpisode.item)
                                 }
                             }
                         }
@@ -1278,11 +1301,11 @@ fun HomeScreen(
                                         .asPaddingValues(),
                             ) {
                                 items(
-                                    items = featuredPodcasts,
-                                    key = { "home_featured_podcast_${it.id}" },
+                                    items = featuredPodcastsKeyed,
+                                    key = { it.key },
                                     contentType = { "Podcast" },
-                                ) { podcast ->
-                                    ytGridItem(podcast)
+                                ) { keyedPodcast ->
+                                    ytGridItem(keyedPodcast.item)
                                 }
                             }
                         }
@@ -1358,6 +1381,10 @@ fun HomeScreen(
                             }
 
                             item(key = "1_chip_section_list_${section.index}") {
+                                val chipSectionItemsKeyed =
+                                    remember(sectionData.items) {
+                                        sectionData.items.toLazyKeyedItems { "home_chip_section_${section.index}_${it::class.qualifiedName}:${it.id}" }
+                                    }
                                 LazyRow(
                                     contentPadding =
                                         WindowInsets.systemBars
@@ -1365,11 +1392,11 @@ fun HomeScreen(
                                             .asPaddingValues(),
                                 ) {
                                     items(
-                                        items = sectionData.items,
-                                        key = { "home_chip_section_${section.index}_${it.id}" },
-                                        contentType = { it::class.simpleName ?: "HomeChipItem" },
-                                    ) { item ->
-                                        ytGridItem(item)
+                                        items = chipSectionItemsKeyed,
+                                        key = { it.key },
+                                        contentType = { it.item::class.simpleName ?: "HomeChipItem" },
+                                    ) { keyedItem ->
+                                        ytGridItem(keyedItem.item)
                                     }
                                 }
                             }
@@ -1977,7 +2004,7 @@ fun HomeScreen(
                         }
 
                         HomeSection.KeepListening -> {
-                            keepListening?.takeIf { it.isNotEmpty() }?.let { keepListening ->
+                            keepListeningKeyed.takeIf { it.isNotEmpty() }?.let { keepListening ->
                                 item(key = "keep_listening_title") {
                                     NavigationTitle(
                                         title = stringResource(R.string.keep_listening),
@@ -2011,10 +2038,10 @@ fun HomeScreen(
                                     ) {
                                         items(
                                             items = keepListening,
-                                            key = { "home_keep_listening_${it.id}" },
-                                            contentType = { it::class.simpleName ?: "KeepListeningItem" },
-                                        ) {
-                                            localGridItem(it)
+                                            key = { it.key },
+                                            contentType = { it.item::class.simpleName ?: "KeepListeningItem" },
+                                        ) { keyedItem ->
+                                            localGridItem(keyedItem.item)
                                         }
                                     }
                                 }
@@ -2244,6 +2271,12 @@ fun HomeScreen(
                                 }
 
                                 item(key = "similar_to_list_${section.index}") {
+                                    val recommendationItemsKeyed =
+                                        remember(recommendation.items) {
+                                            recommendation.items.toLazyKeyedItems {
+                                                "home_similar_${section.index}_${it::class.qualifiedName}:${it.id}"
+                                            }
+                                        }
                                     LazyRow(
                                         contentPadding =
                                             WindowInsets.systemBars
@@ -2252,11 +2285,11 @@ fun HomeScreen(
                                         modifier = Modifier.animateItem(),
                                     ) {
                                         items(
-                                            items = recommendation.items,
-                                            key = { "home_similar_${section.index}_${it.id}" },
-                                            contentType = { it::class.simpleName ?: "RecommendationItem" },
-                                        ) { item ->
-                                            ytGridItem(item)
+                                            items = recommendationItemsKeyed,
+                                            key = { it.key },
+                                            contentType = { it.item::class.simpleName ?: "RecommendationItem" },
+                                        ) { keyedItem ->
+                                            ytGridItem(keyedItem.item)
                                         }
                                     }
                                 }
@@ -2489,6 +2522,10 @@ fun HomeScreen(
                                 return@forEach
                             }
                             explorePage?.moodAndGenres?.let { moodAndGenres ->
+                                val moodAndGenresKeyed =
+                                    moodAndGenres.toLazyKeyedItems {
+                                        "home_mood_${it.endpoint.browseId}:${it.endpoint.params.orEmpty()}"
+                                    }
                                 item(key = "mood_and_genres_title") {
                                     NavigationTitle(
                                         title = stringResource(R.string.mood_and_genres),
@@ -2507,11 +2544,12 @@ fun HomeScreen(
                                                 .height((MoodAndGenresButtonHeight + 12.dp) * 4 + 12.dp)
                                                 .animateItem(),
                                     ) {
-                                        itemsIndexed(
-                                            items = moodAndGenres,
-                                            key = { index, item -> "home_mood_${item.endpoint.browseId}:${item.endpoint.params.orEmpty()}:$index" },
-                                            contentType = { _, _ -> "MoodAndGenre" },
-                                        ) { _, item ->
+                                        items(
+                                            items = moodAndGenresKeyed,
+                                            key = { it.key },
+                                            contentType = { "MoodAndGenre" },
+                                        ) { keyedMood ->
+                                            val item = keyedMood.item
                                             MoodAndGenresButton(
                                                 title = item.title,
                                                 onClick = {

@@ -46,6 +46,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
@@ -757,7 +758,7 @@ class ListenTogetherClient
             _roomState.value = null
             _role.value = RoomRole.NONE
             _userId.value = null
-            _pendingJoinRequests.value = emptyList()
+            _pendingJoinRequests.update { emptyList() }
             _bufferingUsers.value = emptyList()
 
             // Clear from persistent storage
@@ -945,7 +946,7 @@ class ListenTogetherClient
             // Don't clear room state - we might reconnect
             // Only update connection state
             _connectionState.value = ConnectionState.DISCONNECTED
-            _pendingJoinRequests.value = emptyList()
+            _pendingJoinRequests.update { emptyList() }
             _bufferingUsers.value = emptyList()
 
             // If we have a session, try to reconnect
@@ -1087,9 +1088,9 @@ class ListenTogetherClient
                             return
                         }
 
-                        _pendingJoinRequests.value =
-                            _pendingJoinRequests.value
-                                .filter { it.userId != payload.userId } + payload
+                        _pendingJoinRequests.update { requests ->
+                            requests.filter { it.userId != payload.userId } + payload
+                        }
                         log(LogLevel.INFO, "Join request received", "User: ${payload.username}")
 
                         // Check if auto-approval is enabled
@@ -1144,7 +1145,9 @@ class ListenTogetherClient
                             _roomState.value?.copy(
                                 users = _roomState.value!!.users + UserInfo(payload.userId, payload.username, false),
                             )
-                        _pendingJoinRequests.value = _pendingJoinRequests.value.filter { it.userId != payload.userId }
+                        _pendingJoinRequests.update { requests ->
+                            requests.filter { it.userId != payload.userId }
+                        }
 
                         // Dismiss notification if it exists
                         joinRequestNotifications.remove(payload.userId)?.let { notifId ->
@@ -1312,9 +1315,9 @@ class ListenTogetherClient
                                 approveSuggestion(payload.suggestionId)
                             } else {
                                 // Add to pending list and show notification
-                                _pendingSuggestions.value =
-                                    _pendingSuggestions.value
-                                        .filter { it.suggestionId != payload.suggestionId } + payload
+                                _pendingSuggestions.update { suggestions ->
+                                    suggestions.filter { it.suggestionId != payload.suggestionId } + payload
+                                }
                                 // Notify the host with actionable notification
                                 if (ActivityCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
                                     PackageManager.PERMISSION_GRANTED
@@ -1359,7 +1362,7 @@ class ListenTogetherClient
                                 // Clear stale room state immediately - server no longer recognizes the session
                                 _roomState.value = null
                                 _role.value = RoomRole.NONE
-                                _pendingJoinRequests.value = emptyList()
+                                _pendingJoinRequests.update { emptyList() }
                                 _bufferingUsers.value = emptyList()
 
                                 // Session expired on server, try to rejoin the room
@@ -1562,7 +1565,7 @@ class ListenTogetherClient
             _roomState.value = null
             _role.value = RoomRole.NONE
             _userId.value = null
-            _pendingJoinRequests.value = emptyList()
+            _pendingJoinRequests.update { emptyList() }
             _bufferingUsers.value = emptyList()
 
             // Clear from persistent storage
@@ -1600,7 +1603,9 @@ class ListenTogetherClient
                 return
             }
             sendMessage(MessageTypes.REJECT_JOIN, RejectJoinPayload(userId, reason))
-            _pendingJoinRequests.value = _pendingJoinRequests.value.filter { it.userId != userId }
+            _pendingJoinRequests.update { requests ->
+                requests.filter { it.userId != userId }
+            }
 
             // Dismiss notification immediately when rejected from UI
             joinRequestNotifications.remove(userId)?.let { notifId ->
@@ -1696,7 +1701,9 @@ class ListenTogetherClient
             }
             sendMessage(MessageTypes.APPROVE_SUGGESTION, ApproveSuggestionPayload(suggestionId))
             // Remove locally from pending list
-            _pendingSuggestions.value = _pendingSuggestions.value.filter { it.suggestionId != suggestionId }
+            _pendingSuggestions.update { suggestions ->
+                suggestions.filter { it.suggestionId != suggestionId }
+            }
 
             // Dismiss notification immediately when approved from UI
             suggestionNotifications.remove(suggestionId)?.let { notifId ->
@@ -1716,7 +1723,9 @@ class ListenTogetherClient
                 return
             }
             sendMessage(MessageTypes.REJECT_SUGGESTION, RejectSuggestionPayload(suggestionId, reason))
-            _pendingSuggestions.value = _pendingSuggestions.value.filter { it.suggestionId != suggestionId }
+            _pendingSuggestions.update { suggestions ->
+                suggestions.filter { it.suggestionId != suggestionId }
+            }
 
             // Dismiss notification immediately when rejected from UI
             suggestionNotifications.remove(suggestionId)?.let { notifId ->
@@ -1745,12 +1754,12 @@ class ListenTogetherClient
             _blockedUsernames.value = updated
 
             // Filter out blocked users from pending requests and suggestions
-            _pendingJoinRequests.value =
-                _pendingJoinRequests.value
-                    .filter { it.username !in _blockedUsernames.value }
-            _pendingSuggestions.value =
-                _pendingSuggestions.value
-                    .filter { it.fromUsername !in _blockedUsernames.value }
+            _pendingJoinRequests.update { requests ->
+                requests.filter { it.username !in updated }
+            }
+            _pendingSuggestions.update { suggestions ->
+                suggestions.filter { it.fromUsername !in updated }
+            }
 
             // Save to storage
             scope.launch {

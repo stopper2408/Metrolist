@@ -148,7 +148,7 @@ fun YouTubeSongMenu(
         ) {
             items(
                 items = artists,
-                key = { it.id ?: "artist_fallback_${it.name.hashCode()}" },
+                key = { "artist_${it.id.orEmpty()}" },
                 contentType = { "Artist" }
             ) { artist ->
                 Row(
