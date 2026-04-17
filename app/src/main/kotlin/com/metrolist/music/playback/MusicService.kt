@@ -1422,21 +1422,25 @@ class MusicService :
 
     fun startRadioSeamlessly() {
         scope.launch(SilentHandler) {
-            try {
-                toggleStartRadioInternal()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: IllegalStateException) {
-                if (e.message == "No radio recommendations available for current track") {
-                    Timber.tag(TAG).d(e, "Start radio: no recommendations available")
-                } else {
-                    Timber.tag(TAG).e(e, "Failed to start radio seamlessly")
-                    reportException(e)
-                }
-            } catch (e: Exception) {
-                Timber.tag(TAG).e(e, "Failed to start radio seamlessly")
+            runStartRadioSafely("Failed to start radio seamlessly")
+        }
+    }
+
+    private suspend fun runStartRadioSafely(errorMessage: String) {
+        try {
+            toggleStartRadioInternal()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IllegalStateException) {
+            if (e.message == NO_RADIO_RECOMMENDATIONS_MESSAGE) {
+                Timber.tag(TAG).d(e, "Start radio: no recommendations available")
+            } else {
+                Timber.tag(TAG).e(e, errorMessage)
                 reportException(e)
             }
+        } catch (e: Exception) {
+            Timber.tag(TAG).e(e, errorMessage)
+            reportException(e)
         }
     }
 
@@ -1543,7 +1547,7 @@ class MusicService :
             }
 
             if (!hasAppliedRadioItems) {
-                throw IllegalStateException("No radio recommendations available for current track")
+                throw IllegalStateException(NO_RADIO_RECOMMENDATIONS_MESSAGE)
             }
         }
     }
@@ -2064,7 +2068,7 @@ class MusicService :
 
     fun toggleStartRadio() {
         scope.launch(SilentHandler) {
-            toggleStartRadioInternal()
+            runStartRadioSafely("Failed to start radio")
         }
     }
 
@@ -4045,6 +4049,7 @@ class MusicService :
         private const val MIN_GAIN_MB = -1500 // Minimum gain in millibels (-15 dB)
 
         private const val TAG = "MusicService"
+        private const val NO_RADIO_RECOMMENDATIONS_MESSAGE = "No radio recommendations available for current track"
         private const val PRIVATE_STREAM_MARKER = "_metrolist_private"
 
         @Volatile
