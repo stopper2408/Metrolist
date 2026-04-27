@@ -195,7 +195,6 @@ import com.metrolist.music.utils.reportException
 import com.metrolist.music.widget.MetrolistWidgetManager
 import com.metrolist.music.widget.MusicWidgetReceiver
 import dagger.hilt.android.AndroidEntryPoint
-import kotlinx.coroutines.CancellationException
 import kotlin.coroutines.coroutineContext
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CoroutineScope
