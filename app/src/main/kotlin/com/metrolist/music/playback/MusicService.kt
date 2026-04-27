@@ -28,10 +28,12 @@ import android.media.audiofx.LoudnessEnhancer
 import android.net.ConnectivityManager
 import android.os.Binder
 import android.os.Build
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.getSystemService
 import androidx.core.net.toUri
@@ -75,8 +77,11 @@ import androidx.media3.session.CommandButton
 import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaController
 import androidx.media3.session.MediaLibraryService
+import androidx.media3.session.MediaNotification
 import androidx.media3.session.MediaSession
+import androidx.media3.session.MediaSessionService
 import androidx.media3.session.SessionToken
+import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.MoreExecutors
 import com.metrolist.innertube.YouTube
 import com.metrolist.innertube.models.SongItem
@@ -176,6 +181,8 @@ import com.metrolist.music.playback.queues.Queue
 import com.metrolist.music.playback.queues.YouTubeQueue
 import com.metrolist.music.playback.queues.filterExplicit
 import com.metrolist.music.playback.queues.filterVideoSongs
+import com.metrolist.music.constants.LoudnessLevel
+import com.metrolist.music.constants.LoudnessLevelKey
 import com.metrolist.music.utils.CoilBitmapLoader
 import com.metrolist.music.utils.DiscordRPC
 import com.metrolist.music.utils.NetworkConnectivityObserver
@@ -188,6 +195,9 @@ import com.metrolist.music.utils.reportException
 import com.metrolist.music.widget.MetrolistWidgetManager
 import com.metrolist.music.widget.MusicWidgetReceiver
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.CancellationException
+import kotlin.coroutines.coroutineContext
+import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -218,9 +228,7 @@ import java.io.ObjectInputStream
 import java.io.ObjectOutputStream
 import java.time.LocalDateTime
 import javax.inject.Inject
-import kotlin.coroutines.coroutineContext
 import kotlin.random.Random
-import kotlin.time.Duration.Companion.seconds
 
 private const val INSTANT_SILENCE_SKIP_STEP_MS = 15_000L
 private const val INSTANT_SILENCE_SKIP_SETTLE_MS = 350L
@@ -373,11 +381,27 @@ class MusicService :
     private val instantSilenceSkipEnabled = MutableStateFlow(false)
 
     private var isAudioEffectSessionOpened = false
+    private var openedAudioEffectSessionId: Int = C.AUDIO_SESSION_ID_UNSET
     private var loudnessEnhancer: LoudnessEnhancer? = null
+
+    private var loudnessSetupJob: Job? = null
+    private var loudnessSetupGeneration: Long = 0L
+
+    @Volatile
+    private var normalizationEnabledCached: Boolean = false
+
+    @Volatile
+    private var loudnessLevelCached: LoudnessLevel = LoudnessLevel.BALANCED
+
+    private var cachedNormalizationGainMb: Int? = null
+    private var cachedNormalizationEnabled: Boolean = false
 
     private var discordRpc: DiscordRPC? = null
     private var lastPlaybackSpeed = 1.0f
     private var discordUpdateJob: kotlinx.coroutines.Job? = null
+
+    @Volatile
+    private var latestMediaNotification: Notification? = null
 
     private var scrobbleManager: ScrobbleManager? = null
 
@@ -462,17 +486,27 @@ class MusicService :
         super.onCreate()
         isRunning = true
 
+        setListener(
+            object : MediaSessionService.Listener {
+                override fun onForegroundServiceStartNotAllowedException() {
+                    handleForegroundServiceStartNotAllowed(null)
+                }
+            },
+        )
+
         // Player rediness reset to false
         playerInitialized.value = false
 
         // 3. Connect the processor to the service
         // handled in createExoPlayer
 
+        seedLoudnessCacheFromPrefs()
+
         if (!ensureStartedAsForegroundOrStop()) {
             return
         }
 
-        setMediaNotificationProvider(
+        val defaultMediaNotificationProvider =
             DefaultMediaNotificationProvider(
                 this,
                 { NOTIFICATION_ID },
@@ -480,6 +514,49 @@ class MusicService :
                 R.string.music_player,
             ).apply {
                 setSmallIcon(R.drawable.small_icon)
+            }
+
+        setMediaNotificationProvider(
+            object : MediaNotification.Provider {
+                override fun createNotification(
+                    mediaSession: MediaSession,
+                    mediaButtonPreferences: ImmutableList<CommandButton>,
+                    actionFactory: MediaNotification.ActionFactory,
+                    onNotificationChangedCallback: MediaNotification.Provider.Callback,
+                ): MediaNotification {
+                    val trackingCallback =
+                        MediaNotification.Provider.Callback { notification ->
+                            latestMediaNotification = notification.notification
+                            Handler(Looper.getMainLooper()).post {
+                                runCatching {
+                                    NotificationManagerCompat
+                                        .from(this@MusicService)
+                                        .notify(notification.notificationId, notification.notification)
+                                }.onFailure { error ->
+                                    Timber.tag(TAG).w(error, "Failed to post async media notification update")
+                                }
+                            }
+                        }
+
+                    return defaultMediaNotificationProvider
+                        .createNotification(
+                            mediaSession,
+                            mediaButtonPreferences,
+                            actionFactory,
+                            trackingCallback,
+                        ).also { mediaNotification ->
+                            latestMediaNotification = mediaNotification.notification
+                        }
+                }
+
+                override fun handleCustomCommand(
+                    session: MediaSession,
+                    action: String,
+                    extras: Bundle,
+                ): Boolean = defaultMediaNotificationProvider.handleCustomCommand(session, action, extras)
+
+                override fun getNotificationChannelInfo(): MediaNotification.Provider.NotificationChannelInfo =
+                    defaultMediaNotificationProvider.notificationChannelInfo
             },
         )
         player = createExoPlayer()
@@ -726,9 +803,16 @@ class MusicService :
             dataStore.data
                 .map { it[AudioNormalizationKey] ?: true }
                 .distinctUntilChanged(),
-        ) { format, normalizeAudio ->
-            format to normalizeAudio
-        }.collectLatest(scope) { (format, normalizeAudio) -> setupLoudnessEnhancer() }
+            dataStore.data
+                .map { prefs -> prefs[LoudnessLevelKey].toEnum(LoudnessLevel.BALANCED) }
+                .distinctUntilChanged(),
+        ) { format, normalizeAudio, loudnessLevel ->
+            Triple(format, normalizeAudio, loudnessLevel)
+        }.collectLatest(scope) { (format, normalizeAudio, loudnessLevel) ->
+            normalizationEnabledCached = normalizeAudio
+            loudnessLevelCached = loudnessLevel
+            setupLoudnessEnhancer()
+        }
 
         combine(
             dataStore.data.map { it[AudioOffload] ?: false },
@@ -1671,9 +1755,14 @@ class MusicService :
                 val nextBlock = (insertIndex until (insertIndex + items.size)).toList()
                 val finalOrder = IntArray(size)
                 var pos = 0
+                prevList
+                    .filter { it !in newIndices }
+                    .forEach { if (it in 0 until size) finalOrder[pos++] = it }
                 finalOrder[pos++] = currentIndex
                 nextBlock.forEach { if (it in 0 until size) finalOrder[pos++] = it }
-                existingOrder.forEach { if (pos < size) finalOrder[pos++] = it }
+                orderAfter
+                    .filter { it !in newIndices }
+                    .forEach { if (pos < size) finalOrder[pos++] = it }
 
                 // Fill any missing indices (safety) to ensure a full permutation
                 if (pos < size) {
@@ -1826,6 +1915,47 @@ class MusicService :
         startRadioSeamlessly()
     }
 
+    private fun seedLoudnessCacheFromPrefs() {
+        normalizationEnabledCached = dataStore.get(AudioNormalizationKey, true)
+        loudnessLevelCached = dataStore[LoudnessLevelKey].toEnum(LoudnessLevel.BALANCED)
+
+        Timber.tag(TAG).d(
+            "Seeded loudness cache: normalization=$normalizationEnabledCached, level=$loudnessLevelCached"
+        )
+    }
+
+    private fun applyCachedLoudnessEnhancerNow() {
+        val enhancer = loudnessEnhancer ?: return
+
+        try {
+            val gain = cachedNormalizationGainMb
+
+            if (cachedNormalizationEnabled && gain != null) {
+                enhancer.setTargetGain(gain)
+                enhancer.enabled = true
+            } else {
+                enhancer.enabled = false
+            }
+        } catch (e: Exception) {
+            reportException(e)
+            releaseLoudnessEnhancer()
+        }
+    }
+
+    private fun createLoudnessEnhancerForSessionId(audioSessionId: Int): Boolean {
+        try {
+            loudnessEnhancer = LoudnessEnhancer(audioSessionId)
+            Timber.tag(TAG).d("LoudnessEnhancer created for sessionId=$audioSessionId")
+
+            return true
+        } catch (e: Exception) {
+            reportException(e)
+            loudnessEnhancer = null
+
+            return false
+        }
+    }
+
     private fun setupLoudnessEnhancer() {
         val audioSessionId = player.audioSessionId
 
@@ -1837,28 +1967,21 @@ class MusicService :
         }
 
         // Create or recreate enhancer if needed
-        if (loudnessEnhancer == null) {
-            try {
-                loudnessEnhancer = LoudnessEnhancer(audioSessionId)
-                Timber.tag(TAG).d("LoudnessEnhancer created for sessionId=$audioSessionId")
-            } catch (e: Exception) {
-                reportException(e)
-                loudnessEnhancer = null
-                return
-            }
+        if (loudnessEnhancer == null && !createLoudnessEnhancerForSessionId(audioSessionId)) {
+            return
         }
 
-        scope.launch {
+        val requestGeneration = ++loudnessSetupGeneration
+        loudnessSetupJob?.cancel()
+
+        loudnessSetupJob = scope.launch {
             try {
                 val currentMediaId =
                     withContext(Dispatchers.Main) {
                         player.currentMediaItem?.mediaId
                     }
 
-                val normalizeAudio =
-                    withContext(Dispatchers.IO) {
-                        dataStore.data.map { it[AudioNormalizationKey] ?: true }.first()
-                    }
+                val normalizeAudio = normalizationEnabledCached
 
                 if (normalizeAudio && currentMediaId != null) {
                     val format =
@@ -1866,46 +1989,64 @@ class MusicService :
                             database.format(currentMediaId).first()
                         }
 
+                    val targetLufs = loudnessLevelCached.targetLufs
+
                     Timber.tag(TAG).d("Audio normalization enabled: $normalizeAudio")
                     Timber
                         .tag(TAG)
                         .d("Format loudnessDb: ${format?.loudnessDb}, perceptualLoudnessDb: ${format?.perceptualLoudnessDb}")
 
-                    // Use loudnessDb if available, otherwise fall back to perceptualLoudnessDb
-                    val loudness = format?.loudnessDb ?: format?.perceptualLoudnessDb
+                    // Use perceptualLoudnessDb if available, otherwise fall back to loudnessDb + offset
+                    val measuredLufs: Double? = format?.perceptualLoudnessDb
+                        ?: format?.loudnessDb?.let { it + LoudnessLevel.AGGRESSIVE.targetLufs }
 
                     withContext(Dispatchers.Main) {
-                        if (loudness != null) {
-                            val loudnessDb = loudness.toFloat()
-                            val targetGain = (-loudnessDb * 100).toInt()
-                            val clampedGain = targetGain.coerceIn(MIN_GAIN_MB, MAX_GAIN_MB)
+                        if (!isActive || requestGeneration != loudnessSetupGeneration) return@withContext
+                        if (player.audioSessionId != audioSessionId || player.currentMediaItem?.mediaId != currentMediaId) return@withContext
 
-                            Timber
-                                .tag(TAG)
-                                .d("Calculated raw normalization gain: $targetGain mB (from loudness: $loudnessDb)")
+                        when {
+                            measuredLufs != null -> {
+                                val loudnessDb = measuredLufs - targetLufs
+                                val targetGain = (-loudnessDb * 100.0).toInt()
+                                val clampedGain = targetGain.coerceIn(MIN_GAIN_MB, MAX_GAIN_MB)
 
-                            try {
+                                Timber.tag(TAG)
+                                    .d("Normalization Target LUFS: $targetLufs, Measured LUFS: $measuredLufs, Calculated gain: $targetGain mB, Clamped gain: $clampedGain mB")
+
+                                Timber.tag(TAG)
+                                    .d("Calculated raw normalization gain: $targetGain mB (from loudness: $loudnessDb)")
+
+                                cachedNormalizationGainMb = clampedGain
+                                cachedNormalizationEnabled = true
                                 loudnessEnhancer?.setTargetGain(clampedGain)
                                 loudnessEnhancer?.enabled = true
-                                Timber.tag(TAG).i("LoudnessEnhancer gain applied: $clampedGain mB")
-                            } catch (e: Exception) {
-                                Timber.tag(TAG).e(e, "Failed to apply loudness enhancement")
-                                reportException(e)
-                                releaseLoudnessEnhancer()
                             }
-                        } else {
-                            loudnessEnhancer?.enabled = false
-                            Timber
-                                .tag(TAG)
-                                .w("Normalization enabled but no loudness data available - no normalization applied")
+
+                            format == null -> {
+                                // Row not available yet for new track: keep carry-over gain to avoid a jump.
+                                Timber.tag(TAG).d("Loudness row not ready yet; keeping cached normalization state")
+                            }
+
+                            else -> {
+                                cachedNormalizationGainMb = null
+                                cachedNormalizationEnabled = false
+                                loudnessEnhancer?.enabled = false
+                                Timber.tag(TAG).w("No loudness data available for track - normalization disabled")
+                            }
                         }
                     }
                 } else {
                     withContext(Dispatchers.Main) {
+                        if (!isActive || requestGeneration != loudnessSetupGeneration) return@withContext
+                        cachedNormalizationGainMb = null
+                        cachedNormalizationEnabled = false
                         loudnessEnhancer?.enabled = false
                         Timber.tag(TAG).d("setupLoudnessEnhancer: normalization disabled or mediaId unavailable")
                     }
                 }
+            } catch (e: CancellationException) {
+                Timber.tag(TAG).d("setupLoudnessEnhancer: job cancelled, likely due to new setup request or session change")
+                throw e
             } catch (e: Exception) {
                 reportException(e)
                 releaseLoudnessEnhancer()
@@ -1913,7 +2054,7 @@ class MusicService :
         }
     }
 
-    private fun releaseLoudnessEnhancer() {
+    private fun releaseLoudnessEnhancer(clearNormalizationCache: Boolean = true) {
         try {
             loudnessEnhancer?.release()
             Timber.tag(TAG).d("LoudnessEnhancer released")
@@ -1921,33 +2062,98 @@ class MusicService :
             reportException(e)
             Timber.tag(TAG).e(e, "Error releasing LoudnessEnhancer: ${e.message}")
         } finally {
+            if (clearNormalizationCache) {
+                cachedNormalizationGainMb = null
+                cachedNormalizationEnabled = false
+            }
             loudnessEnhancer = null
         }
     }
 
     private fun openAudioEffectSession() {
-        if (isAudioEffectSessionOpened) return
+        val audioSessionId = player.audioSessionId
+        if (audioSessionId == C.AUDIO_SESSION_ID_UNSET || audioSessionId <= 0) {
+            Timber.tag(TAG).w("openAudioEffectSession: invalid audioSessionId=$audioSessionId")
+            return
+        }
+
+        if (isAudioEffectSessionOpened &&
+            openedAudioEffectSessionId == audioSessionId &&
+            loudnessEnhancer != null
+        ) {
+            applyCachedLoudnessEnhancerNow()
+
+            if (!cachedNormalizationEnabled || cachedNormalizationGainMb == null) {
+                setupLoudnessEnhancer()
+            }
+
+            return
+        }
+
+        if (isAudioEffectSessionOpened && openedAudioEffectSessionId > 0) {
+            closeAudioEffectSession(sessionIdOverride = openedAudioEffectSessionId, clearNormalizationCache = false)
+        } else {
+            releaseLoudnessEnhancer(clearNormalizationCache = false)
+        }
+
+        val enhancerReady = loudnessEnhancer != null || createLoudnessEnhancerForSessionId(audioSessionId)
+
+        if (!enhancerReady) {
+            isAudioEffectSessionOpened = false
+            openedAudioEffectSessionId = C.AUDIO_SESSION_ID_UNSET
+            Timber.tag(TAG).w("openAudioEffectSession: failed to create LoudnessEnhancer for sessionId=$audioSessionId, audio effects will be unavailable")
+            return
+        }
+
         isAudioEffectSessionOpened = true
-        setupLoudnessEnhancer()
+        openedAudioEffectSessionId = audioSessionId
+
+        applyCachedLoudnessEnhancerNow()
+
+        if (!cachedNormalizationEnabled || cachedNormalizationGainMb == null) {
+            setupLoudnessEnhancer()
+        }
+
         sendBroadcast(
             Intent(AudioEffect.ACTION_OPEN_AUDIO_EFFECT_CONTROL_SESSION).apply {
-                putExtra(AudioEffect.EXTRA_AUDIO_SESSION, player.audioSessionId)
+                putExtra(AudioEffect.EXTRA_AUDIO_SESSION, audioSessionId)
                 putExtra(AudioEffect.EXTRA_PACKAGE_NAME, packageName)
                 putExtra(AudioEffect.EXTRA_CONTENT_TYPE, AudioEffect.CONTENT_TYPE_MUSIC)
             },
         )
     }
 
-    private fun closeAudioEffectSession() {
-        if (!isAudioEffectSessionOpened) return
-        isAudioEffectSessionOpened = false
-        releaseLoudnessEnhancer()
-        sendBroadcast(
-            Intent(AudioEffect.ACTION_CLOSE_AUDIO_EFFECT_CONTROL_SESSION).apply {
-                putExtra(AudioEffect.EXTRA_AUDIO_SESSION, player.audioSessionId)
-                putExtra(AudioEffect.EXTRA_PACKAGE_NAME, packageName)
-            },
-        )
+    private fun closeAudioEffectSession(sessionIdOverride: Int? = null, clearNormalizationCache: Boolean = true) {
+        val sessionIdToClose = sessionIdOverride ?: openedAudioEffectSessionId
+
+        loudnessSetupGeneration++
+        loudnessSetupJob?.cancel()
+        loudnessSetupJob = null
+
+        // Guard: only release/reset state if closing the currently active session
+        val isClosingCurrentSession =
+            isAudioEffectSessionOpened &&
+                    openedAudioEffectSessionId != C.AUDIO_SESSION_ID_UNSET &&
+                    sessionIdToClose == openedAudioEffectSessionId
+
+        if (isClosingCurrentSession) {
+            if (loudnessEnhancer != null) {
+                releaseLoudnessEnhancer(clearNormalizationCache = clearNormalizationCache)
+            }
+
+            isAudioEffectSessionOpened = false
+            openedAudioEffectSessionId = C.AUDIO_SESSION_ID_UNSET
+        }
+
+        // Broadcast close for the requested session (even if stale)
+        if (sessionIdToClose != C.AUDIO_SESSION_ID_UNSET && sessionIdToClose > 0) {
+            sendBroadcast(
+                Intent(AudioEffect.ACTION_CLOSE_AUDIO_EFFECT_CONTROL_SESSION).apply {
+                    putExtra(AudioEffect.EXTRA_AUDIO_SESSION, sessionIdToClose)
+                    putExtra(AudioEffect.EXTRA_PACKAGE_NAME, packageName)
+                },
+            )
+        }
     }
 
     private var previousMediaItemIndex = C.INDEX_UNSET
@@ -2095,7 +2301,7 @@ class MusicService :
             }
 
             val repeatMode = runBlocking { dataStore.get(RepeatModeKey, REPEAT_MODE_OFF) }
-            
+
             // Handle Repeat All mode
             if (repeatMode == REPEAT_MODE_ALL && player.mediaItemCount > 0) {
                 player.seekTo(0, 0)
@@ -2103,7 +2309,7 @@ class MusicService :
                 player.play()
                 return
             }
-            
+
             // Handle Repeat One mode - restart current song
             if (repeatMode == REPEAT_MODE_ONE) {
                 player.seekTo(player.currentMediaItemIndex, 0)
@@ -2111,11 +2317,15 @@ class MusicService :
                 player.play()
                 return
             }
-            
+
             // Handle autoplay - check if there's a next item to play
             val autoplay = runBlocking { dataStore.get(AutoplayKey, true) }
             if (autoplay && player.hasNextMediaItem()) {
                 player.seekToNextMediaItem()
+                player.prepare()
+                if (castConnectionHandler?.isCasting?.value != true) {
+                    player.play()
+                }
             }
         }
 
@@ -2173,7 +2383,7 @@ class MusicService :
         }
 
         if (playWhenReady) {
-            setupLoudnessEnhancer()
+            applyCachedLoudnessEnhancerNow()
         }
     }
 
@@ -2194,7 +2404,7 @@ class MusicService :
                 if (focusGranted) {
                     openAudioEffectSession()
                 }
-            } else {
+            } else if (player.playbackState == Player.STATE_IDLE) {
                 closeAudioEffectSession()
             }
         }
@@ -2437,6 +2647,20 @@ class MusicService :
             (error.cause as? PlaybackException)?.errorCode == PlaybackException.ERROR_CODE_AUDIO_TRACK_WRITE_FAILED ||
             (error.cause as? PlaybackException)?.errorCode == PlaybackException.ERROR_CODE_AUDIO_TRACK_INIT_FAILED
 
+    /**
+     * Checks if the error is an IO_FILE_NOT_FOUND (ENOENT).
+     *
+     * In practice this surfaces when the player cache reports a chunk as cached
+     * but the backing file has been evicted/removed (e.g. LRU eviction racing
+     * with a buffer read, an external cache wipe, or partial corruption).
+     * CacheDataSource then falls back to the upstream DefaultDataSource with a
+     * URI that is just the bare mediaId (no scheme), which is interpreted as a
+     * local file path and fails to open.
+     */
+    private fun isFileNotFoundError(error: PlaybackException): Boolean =
+        error.errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND ||
+            (error.cause as? PlaybackException)?.errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND
+
     override fun onPlayerError(error: PlaybackException) {
         super.onPlayerError(error)
 
@@ -2488,6 +2712,12 @@ class MusicService :
             isExpiredUrlError(error) -> {
                 Timber.tag(TAG).d("Expired URL (403) detected, refreshing stream URL")
                 handleExpiredUrlError(mediaId)
+                return
+            }
+
+            isFileNotFoundError(error) -> {
+                Timber.tag(TAG).d("Cache file missing (ENOENT) detected, refreshing stream")
+                handleFileNotFoundError(mediaId)
                 return
             }
 
@@ -2746,6 +2976,43 @@ class MusicService :
     }
 
     /**
+     * Handles IO_FILE_NOT_FOUND (ENOENT) by purging any cached state for the
+     * media item and forcing the resolver to fetch a fresh stream URL.
+     *
+     * The aggressive cache clear at the top of [onPlayerError] already drops
+     * the player cache entry and the cached stream URL, so re-preparing the
+     * player here causes the resolver to take the "fetch fresh stream" path
+     * instead of attempting another cache read for a file that no longer
+     * exists on disk.
+     */
+    private fun handleFileNotFoundError(mediaId: String?) {
+        if (mediaId == null) {
+            handleFinalFailure()
+            return
+        }
+
+        incrementRetryCount(mediaId)
+
+        retryJob?.cancel()
+        retryJob =
+            scope.launch {
+                delay(RETRY_DELAY_MS)
+
+                val currentPosition = player.currentPosition
+                val currentIndex = player.currentMediaItemIndex
+                if (currentIndex == C.INDEX_UNSET) {
+                    Timber.tag(TAG).w("Invalid media item index during file-not-found recovery")
+                    handleFinalFailure()
+                    return@launch
+                }
+                player.seekTo(currentIndex, currentPosition)
+                player.prepare()
+
+                Timber.tag(TAG).d("Retrying playback for $mediaId after IO_FILE_NOT_FOUND")
+            }
+    }
+
+    /**
      * Handles generic IO errors with recovery attempt.
      */
     private fun handleGenericIOError(mediaId: String?) {
@@ -2774,7 +3041,11 @@ class MusicService :
      * Handles final failure when all recovery attempts have been exhausted.
      */
     private fun handleFinalFailure() {
-        if (dataStore.get(AutoSkipNextOnErrorKey, false)) {
+        val autoSkipOnError = dataStore.get(AutoSkipNextOnErrorKey, false)
+        val autoplay = dataStore.get(AutoplayKey, true)
+        val canAdvance = player.hasNextMediaItem()
+
+        if (autoSkipOnError || (autoplay && canAdvance)) {
             Timber.tag(TAG).d("All recovery attempts exhausted, auto-skipping to next track")
             skipOnError()
         } else {
@@ -2827,6 +3098,24 @@ class MusicService :
                                                 .header("Proxy-Authorization", auth)
                                                 .build()
                                         } ?: response.request
+                                    }.addInterceptor { chain ->
+                                        var request = chain.request()
+                                        if (request.url.queryParameter(PRIVATE_STREAM_MARKER) != null) {
+                                            val cleanUrl =
+                                                request.url
+                                                    .newBuilder()
+                                                    .removeAllQueryParameters(PRIVATE_STREAM_MARKER)
+                                                    .build()
+                                            val builder = request.newBuilder().url(cleanUrl)
+                                            val host = cleanUrl.host
+                                            if (host == "youtube.com" || host.endsWith(".youtube.com") ||
+                                                host.endsWith(".googlevideo.com")
+                                            ) {
+                                                YouTube.cookie?.let { builder.header("Cookie", it) }
+                                            }
+                                            request = builder.build()
+                                        }
+                                        chain.proceed(request)
                                     }.build(),
                             ),
                         ),
@@ -2956,10 +3245,12 @@ class MusicService :
             }
 
             Timber.tag("MusicService").i("FETCHING STREAM: $mediaId | quality=$audioQuality")
+            val isUploaded = database.getSongByIdBlocking(mediaId)?.song?.isUploaded == true
             val playbackData =
                 runBlocking(Dispatchers.IO) {
                     YTPlayerUtils.playerResponseForPlayback(
                         mediaId,
+                        isUploadedHint = isUploaded,
                         audioQuality = audioQuality,
                         connectivityManager = connectivityManager,
                     )
@@ -3036,9 +3327,19 @@ class MusicService :
 
                 val streamUrl = nonNullPlayback.streamUrl
 
+                // For privately-owned tracks, mark the URL so the interceptor attaches auth cookies
+                val finalUrl =
+                    if (nonNullPlayback.isPrivatelyOwned) {
+                        val sep = if ("?" in streamUrl) "&" else "?"
+                        "${streamUrl}${sep}${PRIVATE_STREAM_MARKER}=1"
+                    } else {
+                        streamUrl
+                    }
+
                 songUrlCache[mediaId] =
-                    streamUrl to System.currentTimeMillis() + (nonNullPlayback.streamExpiresInSeconds * 1000L)
-                return@Factory dataSpec.withUri(streamUrl.toUri()).subrange(dataSpec.uriPositionOffset, CHUNK_LENGTH)
+                    finalUrl to System.currentTimeMillis() + (nonNullPlayback.streamExpiresInSeconds * 1000L)
+
+                return@Factory dataSpec.withUri(finalUrl.toUri()).subrange(dataSpec.uriPositionOffset, CHUNK_LENGTH)
             }
         }
     }
@@ -3204,31 +3505,65 @@ class MusicService :
      * enter the foreground state, stop immediately so the system does not ANR the app process.
      */
     private fun ensureStartedAsForegroundOrStop(): Boolean =
-        try {
-            val nm = getSystemService(NotificationManager::class.java)
-            nm?.createNotificationChannel(
-                NotificationChannel(
-                    CHANNEL_ID,
-                    getString(R.string.music_player),
-                    NotificationManager.IMPORTANCE_LOW,
-                ),
+        startForegroundSafely(
+            notification = createFallbackForegroundNotification(),
+            deniedMessage = "Foreground service start not allowed; stopping service to avoid ANR",
+            failureMessage = "Failed to enter foreground; stopping service to avoid ANR",
+        )
+
+    private fun ensureForegroundWithLatestNotificationOrStop(): Boolean =
+        startForegroundSafely(
+            notification = latestMediaNotification ?: createFallbackForegroundNotification(),
+            deniedMessage = "Foreground promotion denied during notification update; stopping service",
+            failureMessage = "Failed to promote service during notification update; stopping service",
+            stopOnFailure = true,
+        )
+
+    private fun tryEnsureForegroundWithLatestNotification(): Boolean =
+        startForegroundSafely(
+            notification = latestMediaNotification ?: createFallbackForegroundNotification(),
+            deniedMessage = "Foreground promotion denied during notification update",
+            failureMessage = "Failed to promote service during notification update",
+            stopOnFailure = false,
+        )
+
+    private fun ensureForegroundChannelExists() {
+        val nm = getSystemService(NotificationManager::class.java)
+        nm?.createNotificationChannel(
+            NotificationChannel(
+                CHANNEL_ID,
+                getString(R.string.music_player),
+                NotificationManager.IMPORTANCE_LOW,
+            ),
+        )
+    }
+
+    private fun createFallbackForegroundNotification(): Notification {
+        ensureForegroundChannelExists()
+        val pending =
+            PendingIntent.getActivity(
+                this,
+                0,
+                Intent(this, MainActivity::class.java),
+                PendingIntent.FLAG_IMMUTABLE,
             )
-            val pending =
-                PendingIntent.getActivity(
-                    this,
-                    0,
-                    Intent(this, MainActivity::class.java),
-                    PendingIntent.FLAG_IMMUTABLE,
-                )
-            val notification: Notification =
-                NotificationCompat
-                    .Builder(this, CHANNEL_ID)
-                    .setContentTitle(getString(R.string.music_player))
-                    .setContentText("")
-                    .setSmallIcon(R.drawable.small_icon)
-                    .setContentIntent(pending)
-                    .setOngoing(true)
-                    .build()
+        return NotificationCompat
+            .Builder(this, CHANNEL_ID)
+            .setContentTitle(getString(R.string.music_player))
+            .setContentText("")
+            .setSmallIcon(R.drawable.small_icon)
+            .setContentIntent(pending)
+            .setOngoing(true)
+            .build()
+    }
+
+    private fun startForegroundSafely(
+        notification: Notification,
+        deniedMessage: String,
+        failureMessage: String,
+        stopOnFailure: Boolean = true,
+    ): Boolean =
+        try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 startForeground(
                     NOTIFICATION_ID,
@@ -3240,13 +3575,17 @@ class MusicService :
             }
             true
         } catch (e: ForegroundServiceStartNotAllowedException) {
-            Timber.tag(TAG).w(e, "Foreground service start not allowed; stopping service to avoid ANR")
-            stopSelf()
+            Timber.tag(TAG).w(e, deniedMessage)
+            if (stopOnFailure) {
+                stopSelf()
+            }
             false
         } catch (e: Exception) {
-            Timber.tag(TAG).e(e, "Failed to enter foreground; stopping service to avoid ANR")
+            Timber.tag(TAG).e(e, failureMessage)
             reportException(e)
-            stopSelf()
+            if (stopOnFailure) {
+                stopSelf()
+            }
             false
         }
 
@@ -3286,7 +3625,7 @@ class MusicService :
         discordRpc = null
         connectivityObserver.unregister()
         abandonAudioFocus()
-        releaseLoudnessEnhancer()
+        closeAudioEffectSession()
         mediaLibrarySessionCallback.release()
         mediaSession.release()
         player.removeListener(this)
@@ -3336,11 +3675,44 @@ class MusicService :
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo) = mediaSession
 
+    override fun onUpdateNotification(
+        session: MediaSession,
+        startInForegroundRequired: Boolean,
+    ) {
+        try {
+            // Pass startInForegroundRequired through unchanged so Media3 manages the
+            // foreground service lifecycle itself. Overriding it to `false` and promoting
+            // manually causes Media3 to demote the service on every notification update
+            // (track change, metadata refresh, etc.); the subsequent manual re-promotion is
+            // denied while backgrounded on Android 12+ (mAllowStartForeground=false), which
+            // ends background playback mid-song after autoplay transitions.
+            // Media3 1.10.0 catches ForegroundServiceStartNotAllowedException internally in
+            // onUpdateNotificationInternal, so the 1.7.x crash-workaround is no longer
+            // needed; the try/catch below is kept as belt-and-suspenders defense.
+            super.onUpdateNotification(session, startInForegroundRequired)
+        } catch (e: ForegroundServiceStartNotAllowedException) {
+            handleForegroundServiceStartNotAllowed(e)
+        } catch (e: IllegalStateException) {
+            if (isForegroundServiceStartNotAllowedException(e)) {
+                handleForegroundServiceStartNotAllowed(e)
+            } else {
+                throw e
+            }
+        }
+    }
+
     override fun onStartCommand(
         intent: Intent?,
         flags: Int,
         startId: Int,
     ): Int {
+        val requiresForegroundPromotion =
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                (intent?.action == null || intent.action == ACTION_ALARM_TRIGGER)
+        if (requiresForegroundPromotion && !ensureForegroundWithLatestNotificationOrStop()) {
+            return START_NOT_STICKY
+        }
+
         when (intent?.action) {
             ACTION_ALARM_TRIGGER -> {
                 handleAlarmTrigger(intent)
@@ -3462,6 +3834,39 @@ class MusicService :
             }
         }
     }
+
+    private fun handleForegroundServiceStartNotAllowed(error: Throwable?) {
+        if (error != null) {
+            Timber.tag(TAG).w(error, "Foreground service start denied during notification update")
+        } else {
+            Timber.tag(TAG).w("Foreground service start denied by MediaSessionService listener")
+        }
+
+        if (tryEnsureForegroundWithLatestNotification()) {
+            return
+        }
+
+        if (!::player.isInitialized) {
+            stopSelf()
+            return
+        }
+
+        if (player.isPlaying) {
+            Timber.tag(TAG).w("Keeping playback alive after denied foreground restart request")
+            return
+        }
+
+        runCatching {
+            pauseAllPlayersAndStopSelf()
+        }.onFailure {
+            Timber.tag(TAG).w(it, "Failed to stop service after foreground start denial")
+            stopSelf()
+        }
+    }
+
+    private fun isForegroundServiceStartNotAllowedException(error: IllegalStateException): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            error.javaClass.name == ForegroundServiceStartNotAllowedException::class.java.name
 
     /**
      * Updates all app widgets with current playback state
@@ -3694,6 +4099,10 @@ class MusicService :
             timber.log.Timber.e(e, "Failed to swap player in MediaSession")
         }
 
+        val previousAudioSessionId = fadingPlayer?.audioSessionId ?: C.AUDIO_SESSION_ID_UNSET
+
+        openAudioEffectSession()
+
         crossfadeJob =
             scope.launch {
                 val duration = crossfadeDuration.toLong()
@@ -3730,13 +4139,14 @@ class MusicService :
                 try {
                     fadingPlayer?.volume = 0f
                     player.volume = startVolume
-                    cleanupCrossfade()
                 } catch (e: Exception) {
                 }
+
+                cleanupCrossfade(fadingPlayerSessionId = previousAudioSessionId)
             }
     }
 
-    private fun cleanupCrossfade() {
+    private fun cleanupCrossfade(fadingPlayerSessionId: Int = C.AUDIO_SESSION_ID_UNSET) {
         fadingPlayer?.stop()
         fadingPlayer?.clearMediaItems()
         fadingPlayer?.release()
@@ -3744,6 +4154,10 @@ class MusicService :
         isCrossfading = false
         applyEffectiveVolume()
         sleepTimer.notifySongTransition()
+
+        if (fadingPlayerSessionId != C.AUDIO_SESSION_ID_UNSET && fadingPlayerSessionId > 0) {
+            closeAudioEffectSession(sessionIdOverride = fadingPlayerSessionId, clearNormalizationCache = true)
+        }
     }
 
     companion object {
@@ -3776,6 +4190,7 @@ class MusicService :
         private const val MIN_GAIN_MB = -1500 // Minimum gain in millibels (-15 dB)
 
         private const val TAG = "MusicService"
+        private const val PRIVATE_STREAM_MARKER = "_metrolist_private"
 
         @Volatile
         var isRunning = false
