@@ -1465,22 +1465,20 @@ class MusicService :
         player.pause()
     }
 
-    private fun updateNotification() {
+    private fun updateNotification(isLiked: Boolean? = currentSong.value?.song?.let { if (it.isEpisode) it.inLibrary != null else it.liked }) {
         mediaSession?.setCustomLayout(
             listOf(
                 CommandButton
                     .Builder()
                     .setDisplayName(
                         getString(
-                            if (currentSong.value?.song?.liked ==
-                                true
-                            ) {
+                            if (isLiked == true) {
                                 R.string.action_remove_like
                             } else {
                                 R.string.action_like
                             },
                         ),
-                    ).setIconResId(if (currentSong.value?.song?.liked == true) R.drawable.ic_heart else R.drawable.ic_heart_outline)
+                    ).setIconResId(if (isLiked == true) R.drawable.ic_heart else R.drawable.ic_heart_outline)
                     .setSessionCommand(CommandToggleLike)
                     .setEnabled(currentSong.value != null)
                     .build(),
@@ -2023,6 +2021,11 @@ class MusicService :
                 }
 
                 val song = songEntity.toggleLike()
+
+                // Optimistically update the UI instantly
+                updateNotification(isLiked = song.liked)
+                updateWidgetUI(player.isPlaying, isLiked = song.liked)
+
                 database.query {
                     update(song)
                     syncUtils.likeSong(song)
@@ -2076,6 +2079,10 @@ class MusicService :
     private suspend fun toggleEpisodeSaveForLater(songEntity: com.metrolist.music.db.entities.SongEntity) {
         val isCurrentlySaved = songEntity.inLibrary != null
         val shouldBeSaved = !isCurrentlySaved
+
+        // Optimistically update the UI instantly
+        updateNotification(isLiked = shouldBeSaved)
+        updateWidgetUI(player.isPlaying, isLiked = shouldBeSaved)
 
         // Update database first (optimistic update)
         // Also ensure isEpisode = true so it appears in saved episodes list
@@ -4206,21 +4213,24 @@ class MusicService :
     /**
      * Updates all app widgets with current playback state
      */
-    private fun updateWidgetUI(isPlaying: Boolean) {
+    private fun updateWidgetUI(
+        isPlaying: Boolean,
+        isLiked: Boolean? = currentSong.value?.song?.let { if (it.isEpisode) it.inLibrary != null else it.liked }
+    ) {
         scope.launch {
             try {
                 val songData = currentSong.value
                 val song = songData?.song
                 val songTitle = song?.title ?: getString(R.string.no_song_playing)
                  val artistName = songData?.artists?.joinToArtistString(getArtistSeparator(this@MusicService)) { it.name } ?: getString(R.string.tap_to_open)
-                val isLiked = songData?.song?.liked == true
+                val resolvedIsLiked = isLiked == true
 
                 widgetManager.updateWidgets(
                     title = songTitle,
                     artist = artistName,
                     artworkUri = song?.thumbnailUrl,
                     isPlaying = isPlaying,
-                    isLiked = isLiked,
+                    isLiked = resolvedIsLiked,
                     duration = if (player.duration != C.TIME_UNSET) player.duration else 0,
                     currentPosition = player.currentPosition,
                 )
